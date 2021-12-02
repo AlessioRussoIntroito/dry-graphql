@@ -4,6 +4,7 @@ require 'graphql'
 require 'dry/graphql/types'
 require 'dry/graphql/type_mappings'
 require 'dry/graphql/base_object'
+require 'dry/graphql/input_object'
 require 'dry/core/class_builder'
 
 module Dry
@@ -43,10 +44,10 @@ module Dry
         reduce
       end
 
-      def self.build_graphql_schema_class(name)
+      def self.build_graphql_schema_class(name, parent_class = ::Dry::GraphQL::BaseObject)
         Dry::Core::ClassBuilder.new(
-          name: "DryGraphQLGeneratedTypeFor#{name}",
-          parent: ::Dry::GraphQL::BaseObject
+          name: "DryGraphQLGeneratedTypeFor#{name}#{parent_class.name.split('::').last}",
+          parent: parent_class
         ).call
       end
 
@@ -56,36 +57,52 @@ module Dry
       def reduce
         case type
         when specified_in_meta?
+          puts 1
           type.meta[:graphql_type]
         when pkey_or_fkey?
+          puts 2
           ::GraphQL::Types::ID
         when scalar?
+          puts 3
           TypeMappings.map_scalar type
         when primitive?
+          puts 4
           TypeMappings.map_type(type.primitive)
         when hash_schema?
+          puts 5
           schema_hash = type.options[:keys].each_with_object({}) do |type, hash|
             hash[type.name] = type.type
           end
           map_hash schema_hash
         when raw_hash_type?
+          puts 6
           # FIXME: this should be configurable
           ::Dry::GraphQL::Types::JSON
         when Dry::Types::Array::Member
+          puts 7
           map_array type
         when ::Hash
+          puts 8
           map_hash type
         when ::Dry::Types::Hash
+          puts 9
           schema
         when ::Dry::Types::Constrained, Dry::Types::Constructor
+          puts 10
           reduce_with type: type.type
         when ::Dry::Types::Sum::Constrained, ::Dry::Types::Sum
+          puts 11
           reduce_with type: type.right
         when ::Dry::Types::Nominal
+          puts 12
           reduce_with type: type.primitive
+        when ::Dry::Types::Default
+          reduce_with type: type.type
         when schema?
+          puts 13
           map_schema type
         else
+          puts 14
           raise_type_mapping_error(type)
         end
       end
@@ -133,12 +150,19 @@ module Dry
       def map_hash(hash)
         hash.each do |field_name, field_type|
           next if skip?(field_name)
-
-          schema.field(
-            field_name,
-            with(name: field_name, type: field_type).reduce,
-            null: nullable?(field_type)
-          )
+          if @options[:base_class] == ::GraphQL::Schema::InputObject
+            schema.argument(
+              field_name,
+              with(name: field_name, type: field_type).reduce,
+              required: !nullable?(field_type)
+            )
+          else
+            schema.field(
+              field_name,
+              with(name: field_name, type: field_type).reduce,
+              null: nullable?(field_type)
+            )
+          end
         end
         schema
       end
@@ -165,7 +189,8 @@ module Dry
 
       def map_schema(type)
         graphql_name = generate_name
-        graphql_schema = self.class.build_graphql_schema_class(graphql_name)
+        base_class = @options[:base_class] || ::GraphQL::Schema::Object
+        graphql_schema = self.class.build_graphql_schema_class(graphql_name, base_class)
         graphql_schema.graphql_name(graphql_name)
         type_to_map = if type.respond_to?(:schema) && type.method(:schema).arity.zero?
                         type.schema
@@ -175,7 +200,7 @@ module Dry
                         type.type
                       end
         opts = { name: graphql_name, type: type_to_map, schema: graphql_schema, options: options }
-        SchemaBuilder.new(opts).reduce
+        SchemaBuilder.new(**opts).reduce
       end
 
       def generate_name
